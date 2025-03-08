@@ -28,6 +28,12 @@ async function initDB() {
   if (tokenDoc) {
     refreshToken = tokenDoc.refreshToken;
     console.log("Refresh token chargé depuis MongoDB :", refreshToken);
+
+    // Rafraîchir le token
+    if (refreshToken) {
+      console.log("Rafraîchissement du token...");
+      await refreshAccessToken();
+    }
   }
 }
 
@@ -79,6 +85,7 @@ app.get("/callback", async (req, res) => {
   });
 
   const data = await response.json();
+  console.log("Réponse refreshAccessToken :", data);
   accessToken = data.access_token;
   if (data.refresh_token) {
     await saveRefreshToken(data.refresh_token);
@@ -93,6 +100,7 @@ app.get("/current-track", async (req, res) => {
     return res.status(401).send("Pas de token. Authentifie-toi via /login.");
   }
 
+  console.log("Accès à /current-track, accessToken =", accessToken);
   let response = await fetch(
     "https://api.spotify.com/v1/me/player/currently-playing",
     {
@@ -100,7 +108,7 @@ app.get("/current-track", async (req, res) => {
     }
   );
 
-  if (response.status === 401) {
+  if (response.status === 401 || response.status === 400) {
     // Token expiré, on le rafraîchit
     await refreshAccessToken();
     response = await fetch(
