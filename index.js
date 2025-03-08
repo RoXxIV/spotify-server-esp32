@@ -1,18 +1,48 @@
 import express from "express";
 import fetch from "node-fetch";
+import { MongoClient } from "mongodb";
 
 const app = express();
 const port = process.env.PORT || 3000;
 
 const CLIENT_ID = process.env.CLIENT_ID;
 const CLIENT_SECRET = process.env.CLIENT_SECRET;
-const REDIRECT_URI = process.env.REDIRECT_URI; // Ex: "https://votre-app.render.app/callback"
+const REDIRECT_URI = process.env.REDIRECT_URI;
+const MONGODB_URI = process.env.MONGODB_URI;
 
-// Stockage temporaire des tokens en mémoire (test)
 let accessToken = "";
 let refreshToken = "";
 
-//démarrer l'authentification
+let db, tokensCollection;
+
+// Connexion à MongoDB au démarrage
+async function initDB() {
+  const client = new MongoClient(MONGODB_URI);
+  await client.connect();
+  db = client.db("spotToken");
+  tokensCollection = db.collection("token");
+  console.log("Connecté à MongoDB !");
+
+  // Charger le refresh_token si déjà présent
+  const tokenDoc = await tokensCollection.findOne({ _id: "spotify" });
+  if (tokenDoc) {
+    refreshToken = tokenDoc.refreshToken;
+    console.log("Refresh token chargé depuis MongoDB :", refreshToken);
+  }
+}
+
+// Sauvegarder ou mettre à jour le refresh_token
+async function saveRefreshToken(token) {
+  refreshToken = token;
+  await tokensCollection.updateOne(
+    { _id: "spotify" },
+    { $set: { refreshToken: token } },
+    { upsert: true }
+  );
+  // console.log("Refresh token sauvegardé dans MongoDB :", token);
+}
+
+// Démarrer l'authentification
 app.get("/login", (req, res) => {
   const scopes = "user-read-currently-playing";
   const params = new URLSearchParams({
@@ -25,7 +55,7 @@ app.get("/login", (req, res) => {
   res.redirect(authUrl);
 });
 
-// Route de callback où Spotify redirige après authentification
+// Callback
 app.get("/callback", async (req, res) => {
   const code = req.query.code;
   if (!code) return res.send("Aucun code reçu.");
@@ -50,38 +80,33 @@ app.get("/callback", async (req, res) => {
 
   const data = await response.json();
   accessToken = data.access_token;
-  refreshToken = data.refresh_token;
+  if (data.refresh_token) {
+    await saveRefreshToken(data.refresh_token);
+  }
 
   res.send("Authentification réussie ! Vous pouvez fermer cet onglet.");
 });
 
-// Route pour récupérer le titre actuellement joué
+// current-track
 app.get("/current-track", async (req, res) => {
-  if (!accessToken) {
-    return res
-      .status(401)
-      .send("Pas de token. Veuillez vous authentifier via /login.");
+  if (!accessToken && !refreshToken) {
+    return res.status(401).send("Pas de token. Authentifie-toi via /login.");
   }
 
   let response = await fetch(
     "https://api.spotify.com/v1/me/player/currently-playing",
     {
-      headers: {
-        Authorization: "Bearer " + accessToken,
-      },
+      headers: { Authorization: "Bearer " + accessToken },
     }
   );
 
-  // Si le token a expiré, essayez de le rafraîchir
   if (response.status === 401) {
+    // Token expiré, on le rafraîchit
     await refreshAccessToken();
-    // Refaire la requête
     response = await fetch(
       "https://api.spotify.com/v1/me/player/currently-playing",
       {
-        headers: {
-          Authorization: "Bearer " + accessToken,
-        },
+        headers: { Authorization: "Bearer " + accessToken },
       }
     );
   }
@@ -92,6 +117,7 @@ app.get("/current-track", async (req, res) => {
 
 // Fonction pour rafraîchir le token
 async function refreshAccessToken() {
+  if (!refreshToken) return;
   const tokenUrl = "https://accounts.spotify.com/api/token";
   const params = new URLSearchParams({
     refresh_token: refreshToken,
@@ -111,8 +137,14 @@ async function refreshAccessToken() {
 
   const data = await response.json();
   accessToken = data.access_token;
+  if (data.refresh_token) {
+    await saveRefreshToken(data.refresh_token);
+  }
+  console.log("access_token rafraîchi !");
 }
 
-app.listen(port, () => {
-  console.log(`Server is running on port ${port}`);
+// Lancement du serveur
+app.listen(port, async () => {
+  await initDB();
+  console.log("Serveur démarré sur le port", port);
 });
